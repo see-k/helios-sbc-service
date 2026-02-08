@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Helios — SBC Telemetry API</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet" />
+
+  <!-- RapiDoc -->
+  <script type="module" src="https://unpkg.com/rapidoc/dist/rapidoc-min.js"></script>
+
+  <style>
+    /* ── Reset ───────────────────────────────────────────── */
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    /* ── Animated background with colour orbs ────────────── */
+    body {
+      font-family: 'Inter', 'Segoe UI', sans-serif;
+      background: #050509;
+      overflow: hidden;
+    }
+
+    body::before,
+    body::after {
+      content: '';
+      position: fixed;
+      border-radius: 50%;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    /* Cyan orb — top-left (static — zero repaints) */
+    body::before {
+      width: 700px; height: 700px;
+      top: -10%; left: -5%;
+      background: radial-gradient(circle, rgba(0, 232, 255, 0.10) 0%, transparent 60%);
+    }
+
+    /* Blue orb — bottom-right (static) */
+    body::after {
+      width: 800px; height: 800px;
+      bottom: -15%; right: -8%;
+      background: radial-gradient(circle, rgba(59, 130, 246, 0.07) 0%, transparent 60%);
+    }
+
+    /* ── RapiDoc host fills the viewport ─────────────────── */
+    rapi-doc {
+      position: relative;
+      z-index: 1;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    /* ════════════════════════════════════════════════════════
+       LIQUID  GLASS  —  via  ::part()  selectors
+       ════════════════════════════════════════════════════════ */
+
+    /* ── Navigation sidebar ─────────────────────────────── */
+    rapi-doc::part(section-navbar) {
+      background: #080c15 !important;
+      border-right: 1px solid rgba(0, 188, 212, 0.10);
+    }
+
+    rapi-doc::part(section-navbar-search) {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(0,188,212,0.12);
+      border-radius: 8px;
+    }
+
+    rapi-doc::part(section-navbar-item) {
+      border-radius: 6px;
+      transition: background 0.2s ease;
+    }
+
+    rapi-doc::part(section-navbar-active-item) {
+      background: rgba(0,188,212,0.12) !important;
+      border-left: 2px solid #00e5ff;
+    }
+
+    /* ── Header bar ─────────────────────────────────────── */
+    rapi-doc::part(section-header) {
+      background: #080c15 !important;
+      border-bottom: 1px solid rgba(0, 188, 212, 0.08);
+    }
+
+    /* ── Main content ───────────────────────────────────── */
+    rapi-doc::part(section-main-content) {
+      background: #0a0a12 !important;
+    }
+
+    /* ── Overview / Info ────────────────────────────────── */
+    rapi-doc::part(section-overview) {
+      background: rgba(0, 188, 212, 0.03);
+      border: 1px solid rgba(0, 188, 212, 0.08);
+      border-radius: 14px;
+      padding: 24px 28px;
+    }
+
+    rapi-doc::part(label-overview-title) {
+      color: #00e5ff !important;
+    }
+
+    /* ── Tag sections ───────────────────────────────────── */
+    rapi-doc::part(section-tag) {
+      background: rgba(0, 188, 212, 0.03);
+      border-radius: 10px;
+      margin: 8px 0;
+      padding: 12px 16px;
+    }
+
+    rapi-doc::part(section-operations-in-tag) {
+      padding: 4px 0;
+    }
+
+    rapi-doc::part(label-tag-title) {
+      color: #7dd3fc !important;
+      letter-spacing: 0.5px;
+    }
+
+    /* ── Operation cards — frosted glass ────────────────── */
+    rapi-doc::part(section-operation) {
+      background: #0e121c !important;
+      border: 1px solid rgba(0, 188, 212, 0.07);
+      border-radius: 12px;
+      margin: 10px 0;
+      padding: 20px 24px;
+      transition: border-color 0.2s ease;
+    }
+
+    rapi-doc::part(section-operation):hover {
+      border-color: rgba(0, 188, 212, 0.20);
+    }
+
+    /* ── Operation method badge ─────────────────────────── */
+    rapi-doc::part(label-operation-method) {
+      border-radius: 6px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+
+    rapi-doc::part(label-operation-path) {
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    }
+
+    /* ── Servers section ────────────────────────────────── */
+    rapi-doc::part(section-servers) {
+      background: #0b0e16 !important;
+      border: 1px solid rgba(0, 188, 212, 0.10);
+      border-radius: 12px;
+      padding: 16px 20px;
+    }
+
+    /* ── Auth section ───────────────────────────────────── */
+    rapi-doc::part(section-auth) {
+      background: #0e121c;
+      border: 1px solid rgba(0, 188, 212, 0.08);
+      border-radius: 12px;
+      padding: 16px 20px;
+    }
+
+    /* ── Buttons ─────────────────────────────────────────── */
+    rapi-doc::part(btn) {
+      border-radius: 8px;
+      font-weight: 500;
+      letter-spacing: 0.3px;
+      transition: background 0.2s ease, border-color 0.2s ease;
+    }
+
+    rapi-doc::part(btn-try) {
+      background: rgba(0, 188, 212, 0.15) !important;
+      border: 1px solid rgba(0, 188, 212, 0.35) !important;
+      color: #00e5ff !important;
+    }
+
+    rapi-doc::part(btn-try):hover {
+      background: rgba(0, 188, 212, 0.25) !important;
+    }
+
+    rapi-doc::part(btn-fill) {
+      background: #0891b2 !important;
+      border: none !important;
+    }
+
+    rapi-doc::part(btn-clear-resp) {
+      color: #64748b !important;
+    }
+
+    /* ── Inputs — glass fields ───────────────────────────── */
+    rapi-doc::part(textbox),
+    rapi-doc::part(textbox-param) {
+      background: rgba(255, 255, 255, 0.04) !important;
+      border: 1px solid rgba(0, 188, 212, 0.15) !important;
+      border-radius: 8px;
+      color: #c8d6e5 !important;
+      transition: border-color 0.2s ease;
+    }
+
+    rapi-doc::part(textbox):focus,
+    rapi-doc::part(textbox-param):focus {
+      border-color: rgba(0, 188, 212, 0.40) !important;
+    }
+
+    rapi-doc::part(textarea),
+    rapi-doc::part(textarea-param) {
+      background: rgba(255, 255, 255, 0.04) !important;
+      border: 1px solid rgba(0, 188, 212, 0.15) !important;
+      border-radius: 8px;
+    }
+
+    /* ── Tabs ────────────────────────────────────────────── */
+    rapi-doc::part(tab-btn) {
+      border-radius: 6px 6px 0 0;
+      transition: background 0.2s ease;
+    }
+
+    rapi-doc::part(tab-btn-row) {
+      border-bottom: 1px solid rgba(0, 188, 212, 0.08);
+    }
+
+    rapi-doc::part(tab-content) {
+      background: #0a0e16;
+      border-radius: 0 0 8px 8px;
+      padding: 16px 20px;
+    }
+
+    /* ── Anchors / links ─────────────────────────────────── */
+    rapi-doc::part(anchor) {
+      color: #22d3ee !important;
+      text-decoration: none;
+      transition: color 0.2s ease;
+    }
+
+    rapi-doc::part(anchor):hover {
+      color: #67e8f9 !important;
+    }
+
+    /* ── Scrollbar styling ───────────────────────────────── */
+    rapi-doc::-webkit-scrollbar,
+    rapi-doc *::-webkit-scrollbar {
+      width: 6px;
+    }
+    rapi-doc::-webkit-scrollbar-track,
+    rapi-doc *::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    rapi-doc::-webkit-scrollbar-thumb,
+    rapi-doc *::-webkit-scrollbar-thumb {
+      background: rgba(0, 188, 212, 0.15);
+      border-radius: 3px;
+    }
+    rapi-doc::-webkit-scrollbar-thumb:hover,
+    rapi-doc *::-webkit-scrollbar-thumb:hover {
+      background: rgba(0, 188, 212, 0.30);
+    }
+  </style>
+</head>
+<body>
+
+  <rapi-doc
+    spec-url="/openapi.json"
+    theme="dark"
+    bg-color="#0a0a10"
+    text-color="#c8d6e5"
+    primary-color="#00bcd4"
+    header-color="#080c14"
+    nav-bg-color="#080c14"
+    nav-text-color="#8b949e"
+    nav-hover-bg-color="#0f1520"
+    nav-hover-text-color="#00e5ff"
+    nav-accent-color="#00bcd4"
+    nav-accent-text-color="#ffffff"
+    nav-active-item-marker="left-bar"
+    nav-item-spacing="relaxed"
+    show-method-in-nav-bar="as-colored-block"
+    render-style="read"
+    layout="row"
+    schema-style="table"
+    show-header="true"
+    show-info="true"
+    allow-try="true"
+    allow-authentication="false"
+    heading-text=""
+    regular-font="'Inter', 'Segoe UI', sans-serif"
+    mono-font="'JetBrains Mono', 'Fira Code', 'Consolas', monospace"
+    font-size="default"
+    load-fonts="false"
+    schema-description-expanded="true"
+    default-schema-tab="schema"
+  >
+
+    <!-- ═══ Nav Logo ═══ -->
+    <div slot="nav-logo" style="
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 24px 20px 20px;
+      border-bottom: 1px solid rgba(0,188,212,0.10);
+    ">
+      <!-- Helios sun/drone icon (inline SVG) -->
+      <svg width="36" height="36" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="50" cy="50" r="22" fill="url(#helios-core)" />
+        <circle cx="50" cy="50" r="22" stroke="url(#helios-ring)" stroke-width="2" opacity="0.6"/>
+        <!-- Rays -->
+        <g stroke="#00e5ff" stroke-width="2.5" stroke-linecap="round" opacity="0.7">
+          <line x1="50" y1="8"  x2="50" y2="20"/>
+          <line x1="50" y1="80" x2="50" y2="92"/>
+          <line x1="8"  y1="50" x2="20" y2="50"/>
+          <line x1="80" y1="50" x2="92" y2="50"/>
+          <line x1="20" y1="20" x2="28" y2="28"/>
+          <line x1="72" y1="72" x2="80" y2="80"/>
+          <line x1="80" y1="20" x2="72" y2="28"/>
+          <line x1="20" y1="80" x2="28" y2="72"/>
+        </g>
+        <!-- Rotor arcs (drone hint) -->
+        <path d="M30 30 A14 14 0 0 1 44 30" stroke="#3b82f6" stroke-width="1.5" fill="none" opacity="0.4"/>
+        <path d="M56 30 A14 14 0 0 1 70 30" stroke="#3b82f6" stroke-width="1.5" fill="none" opacity="0.4"/>
+        <path d="M30 70 A14 14 0 0 0 44 70" stroke="#3b82f6" stroke-width="1.5" fill="none" opacity="0.4"/>
+        <path d="M56 70 A14 14 0 0 0 70 70" stroke="#3b82f6" stroke-width="1.5" fill="none" opacity="0.4"/>
+        <defs>
+          <radialGradient id="helios-core" cx="0.4" cy="0.4" r="0.6">
+            <stop offset="0%" stop-color="#22d3ee"/>
+            <stop offset="100%" stop-color="#0891b2"/>
+          </radialGradient>
+          <linearGradient id="helios-ring" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#00e5ff"/>
+            <stop offset="100%" stop-color="#3b82f6"/>
+          </linearGradient>
+        </defs>
+      </svg>
+      <div>
+        <div style="
+          font-size: 18px;
+          font-weight: 700;
+          color: #00e5ff;
+          letter-spacing: 3px;
+          text-transform: uppercase;
+          line-height: 1;
+        ">HELIOS</div>
+        <div style="
+          font-size: 10px;
+          color: #4a6785;
+          letter-spacing: 1.5px;
+          text-transform: uppercase;
+          margin-top: 4px;
+        ">SBC Telemetry</div>
+      </div>
+    </div>
+
+    <!-- ═══ Overview slot ═══ -->
+    <div slot="overview" style="
+      background: #0b0f18;
+      border: 1px solid rgba(0, 188, 212, 0.10);
+      border-radius: 14px;
+      padding: 28px 32px;
+      margin: 20px 0 12px;
+    ">
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
+        <div style="
+          width: 8px; height: 8px;
+          background: #00e5ff;
+          border-radius: 50%;
+          box-shadow: 0 0 6px rgba(0,229,255,0.4);
+        "></div>
+        <h2 style="
+          color: #e2e8f0;
+          font-size: 20px;
+          font-weight: 600;
+          margin: 0;
+        ">Helios eVTOL Fleet — SBC Telemetry API</h2>
+      </div>
+      <p style="color: #7a8ba0; font-size: 14px; line-height: 1.7; margin: 0;">
+        Real-time drone telemetry service for the Helios fleet management platform.
+        Use the <strong style="color:#22d3ee;">REST endpoints</strong> for on-demand snapshots
+        of position, attitude, and battery data — or subscribe to the
+        <strong style="color:#22d3ee;">WebSocket stream</strong> at
+        <code style="
+          background: rgba(0,188,212,0.10);
+          color: #67e8f9;
+          padding: 2px 8px;
+          border-radius: 4px;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 13px;
+        ">ws://&lt;host&gt;/ws/telemetry</code>
+        for continuous live data.
+      </p>
+    </div>
+
+    <!-- ═══ Footer slot ═══ -->
+    <div slot="footer" style="
+      text-align: center;
+      padding: 28px 16px;
+      color: #334155;
+      font-size: 12px;
+      letter-spacing: 0.5px;
+      border-top: 1px solid rgba(0,188,212,0.06);
+    ">
+      <span style="color:#1e3a5f;">✦</span>
+      &nbsp; © 2026 Helios Aerospace &nbsp;·&nbsp; SBC Telemetry Service &nbsp;
+      <span style="color:#1e3a5f;">✦</span>
+    </div>
+
+  </rapi-doc>
+
+</body>
+</html>
