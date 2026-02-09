@@ -8,6 +8,7 @@ Serves a RapiDoc UI at /docs.
 import asyncio
 import json
 import os
+import socket
 import threading
 import time
 from datetime import datetime, timezone
@@ -16,7 +17,6 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, Response
 from flask_cors import CORS
 from flask_sock import Sock
-from mavsdk import System
 
 load_dotenv()  # load .env before reading config
 
@@ -24,7 +24,10 @@ load_dotenv()  # load .env before reading config
 #  Configuration
 # ═══════════════════════════════════════════════════════════════
 
+DRONE_TYPE = os.getenv("DRONE_TYPE", "mavsdk").lower()  # "mavsdk" or "dji"
 DRONE_ADDRESS = os.getenv("DRONE_ADDRESS", "udpin://0.0.0.0:14551")
+DJI_SOCK_PATH = os.getenv("DJI_SOCK_PATH", "/tmp/helios-dji-telemetry.sock")
+DJI_RECONNECT_S = float(os.getenv("DJI_RECONNECT_S", "2"))
 TIMEOUT = int(os.getenv("CONNECT_TIMEOUT", "30"))
 WS_RATE_HZ = float(os.getenv("WS_RATE_HZ", "10"))  # WebSocket push rate
 TELEM_RATE_HZ = float(os.getenv("TELEM_RATE_HZ", "2"))  # telemetry request rate
@@ -73,105 +76,188 @@ def _patch(**kwargs):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  Background asyncio telemetry loop
+#  Backend: MAVSDK
 # ═══════════════════════════════════════════════════════════════
 
-async def _telemetry_loop():
-    """Connect to the drone and stream telemetry into shared state."""
-    drone = System()
-    await drone.connect(system_address=DRONE_ADDRESS)
+def _start_mavsdk_backend():
+    """Import mavsdk, connect, and stream telemetry (runs in daemon thread)."""
+    from mavsdk import System
 
-    print(f"[helios] Listening on {DRONE_ADDRESS} …")
-    print(f"[helios] Waiting up to {TIMEOUT}s for heartbeat")
+    async def _telemetry_loop():
+        drone = System()
+        await drone.connect(system_address=DRONE_ADDRESS)
 
-    # ── Wait for connection ──────────────────────────────────
-    try:
-        await asyncio.wait_for(_wait_for_connection(drone), timeout=TIMEOUT)
-    except asyncio.TimeoutError:
-        _patch(connected=False, connecting=False)
-        print(f"[helios] ✗ No heartbeat received after {TIMEOUT}s.")
-        print("  Troubleshooting:")
-        if DRONE_ADDRESS.startswith("serial"):
-            print("  1. Check that the Pixhawk is powered and USB cable is connected")
-            print("  2. Verify the serial device exists (ls /dev/ttyACM* /dev/ttyUSB*)")
-            print("  3. Check baud rate — common values: 57600, 115200, 921600")
-            print(f"  4. Current address: {DRONE_ADDRESS}")
-        else:
-            print("  1. In Mission Planner → Ctrl+T → add UDP output to 127.0.0.1:14551")
-            print("  2. Or try a different port (14550, 14540)")
-            print("  3. Make sure your drone/SITL is connected to Mission Planner first")
-        return
+        print(f"[helios] Listening on {DRONE_ADDRESS} …")
+        print(f"[helios] Waiting up to {TIMEOUT}s for heartbeat")
 
-    _patch(connected=True, connecting=False, started_at=datetime.now(timezone.utc).isoformat())
-    print("[helios] ✓ Connected — requesting telemetry rates")
+        async def _wait_for_connection():
+            async for state in drone.core.connection_state():
+                if state.is_connected:
+                    return
 
-    # ── Request telemetry rates (required for real hardware) ─
-    tel = drone.telemetry
-    try:
-        await tel.set_rate_position(TELEM_RATE_HZ)
-        await tel.set_rate_battery(TELEM_RATE_HZ)
-        await tel.set_rate_attitude_euler(TELEM_RATE_HZ)
-        await tel.set_rate_velocity_ned(TELEM_RATE_HZ)
-        await tel.set_rate_gps_info(TELEM_RATE_HZ)
-        await tel.set_rate_home(1)
-        await tel.set_rate_in_air(1)
-        await tel.set_rate_landed_state(1)
-        print(f"[helios] ✓ Telemetry rates set to {TELEM_RATE_HZ} Hz")
-    except Exception as e:
-        print(f"[helios] ⚠ Could not set telemetry rates: {e}")
-        print("[helios]   (this is fine for SITL, but real hardware may not stream data)")
-
-    await asyncio.sleep(2)  # give autopilot time to start streaming
-    print("[helios] ✓ Streaming telemetry")
-
-    # ── Telemetry coroutines ─────────────────────────────────
-    async def _stream_position():
-        async for pos in drone.telemetry.position():
-            _patch(position={
-                "latitude_deg": round(pos.latitude_deg, 7),
-                "longitude_deg": round(pos.longitude_deg, 7),
-                "absolute_altitude_m": round(pos.absolute_altitude_m, 2),
-                "relative_altitude_m": round(pos.relative_altitude_m, 2),
-            })
-
-    async def _stream_attitude():
-        async for att in drone.telemetry.attitude_euler():
-            _patch(attitude={
-                "roll_deg": round(att.roll_deg, 2),
-                "pitch_deg": round(att.pitch_deg, 2),
-                "yaw_deg": round(att.yaw_deg, 2),
-            })
-
-    async def _stream_battery():
-        async for bat in drone.telemetry.battery():
-            _patch(battery={
-                "voltage_v": round(bat.voltage_v, 2),
-                "remaining_percent": round(bat.remaining_percent, 4),
-            })
-
-    await asyncio.gather(
-        _stream_position(),
-        _stream_attitude(),
-        _stream_battery(),
-    )
-
-
-async def _wait_for_connection(drone):
-    async for state in drone.core.connection_state():
-        if state.is_connected:
+        try:
+            await asyncio.wait_for(_wait_for_connection(), timeout=TIMEOUT)
+        except asyncio.TimeoutError:
+            _patch(connected=False, connecting=False)
+            print(f"[helios] ✗ No heartbeat received after {TIMEOUT}s.")
+            print("  Troubleshooting:")
+            if DRONE_ADDRESS.startswith("serial"):
+                print("  1. Check that the Pixhawk is powered and USB cable is connected")
+                print("  2. Verify the serial device exists (ls /dev/ttyACM* /dev/ttyUSB*)")
+                print("  3. Check baud rate — common values: 57600, 115200, 921600")
+                print(f"  4. Current address: {DRONE_ADDRESS}")
+            else:
+                print("  1. In Mission Planner → Ctrl+T → add UDP output to 127.0.0.1:14551")
+                print("  2. Or try a different port (14550, 14540)")
+                print("  3. Make sure your drone/SITL is connected to Mission Planner first")
             return
 
+        _patch(connected=True, connecting=False, started_at=datetime.now(timezone.utc).isoformat())
+        print("[helios] ✓ Connected — requesting telemetry rates")
 
-def _start_telemetry_thread():
-    """Run the asyncio telemetry loop in a daemon thread."""
+        tel = drone.telemetry
+        try:
+            await tel.set_rate_position(TELEM_RATE_HZ)
+            await tel.set_rate_battery(TELEM_RATE_HZ)
+            await tel.set_rate_attitude_euler(TELEM_RATE_HZ)
+            await tel.set_rate_velocity_ned(TELEM_RATE_HZ)
+            await tel.set_rate_gps_info(TELEM_RATE_HZ)
+            await tel.set_rate_home(1)
+            await tel.set_rate_in_air(1)
+            await tel.set_rate_landed_state(1)
+            print(f"[helios] ✓ Telemetry rates set to {TELEM_RATE_HZ} Hz")
+        except Exception as e:
+            print(f"[helios] ⚠ Could not set telemetry rates: {e}")
+            print("[helios]   (this is fine for SITL, but real hardware may not stream data)")
+
+        await asyncio.sleep(2)
+        print("[helios] ✓ Streaming telemetry")
+
+        async def _stream_position():
+            async for pos in drone.telemetry.position():
+                _patch(position={
+                    "latitude_deg": round(pos.latitude_deg, 7),
+                    "longitude_deg": round(pos.longitude_deg, 7),
+                    "absolute_altitude_m": round(pos.absolute_altitude_m, 2),
+                    "relative_altitude_m": round(pos.relative_altitude_m, 2),
+                })
+
+        async def _stream_attitude():
+            async for att in drone.telemetry.attitude_euler():
+                _patch(attitude={
+                    "roll_deg": round(att.roll_deg, 2),
+                    "pitch_deg": round(att.pitch_deg, 2),
+                    "yaw_deg": round(att.yaw_deg, 2),
+                })
+
+        async def _stream_battery():
+            async for bat in drone.telemetry.battery():
+                _patch(battery={
+                    "voltage_v": round(bat.voltage_v, 2),
+                    "remaining_percent": round(bat.remaining_percent, 4),
+                })
+
+        await asyncio.gather(
+            _stream_position(),
+            _stream_attitude(),
+            _stream_battery(),
+        )
+
     def _run():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(_telemetry_loop())
 
-    t = threading.Thread(target=_run, daemon=True, name="helios-telemetry")
+    t = threading.Thread(target=_run, daemon=True, name="helios-mavsdk")
     t.start()
-    return t
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Backend: DJI (Unix Domain Socket client)
+# ═══════════════════════════════════════════════════════════════
+
+def _start_dji_backend():
+    """Connect to telemetry-monitor Unix socket and read JSON lines."""
+
+    def _apply_frame(data: dict):
+        updates = {}
+        pos = data.get("position")
+        if pos:
+            updates["position"] = {
+                "latitude_deg": pos.get("latitude_deg"),
+                "longitude_deg": pos.get("longitude_deg"),
+                "absolute_altitude_m": pos.get("absolute_altitude_m"),
+                "relative_altitude_m": pos.get("relative_altitude_m"),
+            }
+        att = data.get("attitude")
+        if att:
+            updates["attitude"] = {
+                "roll_deg": att.get("roll_deg"),
+                "pitch_deg": att.get("pitch_deg"),
+                "yaw_deg": att.get("yaw_deg"),
+            }
+        bat = data.get("battery")
+        if bat:
+            updates["battery"] = {
+                "voltage_v": bat.get("voltage_v"),
+                "remaining_percent": bat.get("remaining_percent"),
+            }
+        if updates:
+            _patch(**updates)
+
+    def _run():
+        buf = b""
+        while True:
+            try:
+                _patch(connecting=True, connected=False)
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.connect(DJI_SOCK_PATH)
+                s.settimeout(5.0)
+                _patch(connecting=False, connected=True,
+                       started_at=datetime.now(timezone.utc).isoformat())
+                print(f"[dji] Connected to {DJI_SOCK_PATH}")
+                buf = b""
+
+                while True:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        raise ConnectionError("socket closed")
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        _apply_frame(data)
+
+            except (ConnectionError, OSError, socket.timeout) as exc:
+                print(f"[dji] Connection lost ({exc}), reconnecting in {DJI_RECONNECT_S}s...")
+                _patch(connecting=False, connected=False)
+                try:
+                    s.close()
+                except Exception:
+                    pass
+                time.sleep(DJI_RECONNECT_S)
+
+    t = threading.Thread(target=_run, daemon=True, name="helios-dji")
+    t.start()
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Start the selected backend
+# ═══════════════════════════════════════════════════════════════
+
+def _start_telemetry_thread():
+    if DRONE_TYPE == "dji":
+        print(f"[helios] Backend: DJI — reading from {DJI_SOCK_PATH}")
+        _start_dji_backend()
+    else:
+        print(f"[helios] Backend: MAVSDK — connecting to {DRONE_ADDRESS}")
+        _start_mavsdk_backend()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -228,7 +314,8 @@ def api_battery():
 @app.route("/api/status")
 def api_status():
     snap = _get_snapshot("connected", "connecting", "started_at", "last_updated")
-    snap["drone_address"] = DRONE_ADDRESS
+    snap["backend"] = DRONE_TYPE
+    snap["drone_address"] = DRONE_ADDRESS if DRONE_TYPE == "mavsdk" else DJI_SOCK_PATH
     snap["ws_rate_hz"] = WS_RATE_HZ
     return jsonify(snap)
 
