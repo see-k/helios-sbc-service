@@ -12,10 +12,13 @@ import threading
 import time
 from datetime import datetime, timezone
 
+from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, Response
 from flask_cors import CORS
 from flask_sock import Sock
 from mavsdk import System
+
+load_dotenv()  # load .env before reading config
 
 # ═══════════════════════════════════════════════════════════════
 #  Configuration
@@ -24,6 +27,7 @@ from mavsdk import System
 DRONE_ADDRESS = os.getenv("DRONE_ADDRESS", "udpin://0.0.0.0:14551")
 TIMEOUT = int(os.getenv("CONNECT_TIMEOUT", "30"))
 WS_RATE_HZ = float(os.getenv("WS_RATE_HZ", "10"))  # WebSocket push rate
+TELEM_RATE_HZ = float(os.getenv("TELEM_RATE_HZ", "2"))  # telemetry request rate
 
 # ═══════════════════════════════════════════════════════════════
 #  Shared telemetry state  (written by bg thread, read by Flask)
@@ -87,13 +91,38 @@ async def _telemetry_loop():
         _patch(connected=False, connecting=False)
         print(f"[helios] ✗ No heartbeat received after {TIMEOUT}s.")
         print("  Troubleshooting:")
-        print("  1. In Mission Planner → Ctrl+T → add UDP output to 127.0.0.1:14551")
-        print("  2. Or try a different port (14550, 14540)")
-        print("  3. Make sure your drone/SITL is connected to Mission Planner first")
+        if DRONE_ADDRESS.startswith("serial"):
+            print("  1. Check that the Pixhawk is powered and USB cable is connected")
+            print("  2. Verify the serial device exists (ls /dev/ttyACM* /dev/ttyUSB*)")
+            print("  3. Check baud rate — common values: 57600, 115200, 921600")
+            print(f"  4. Current address: {DRONE_ADDRESS}")
+        else:
+            print("  1. In Mission Planner → Ctrl+T → add UDP output to 127.0.0.1:14551")
+            print("  2. Or try a different port (14550, 14540)")
+            print("  3. Make sure your drone/SITL is connected to Mission Planner first")
         return
 
     _patch(connected=True, connecting=False, started_at=datetime.now(timezone.utc).isoformat())
-    print("[helios] ✓ Connected — streaming telemetry")
+    print("[helios] ✓ Connected — requesting telemetry rates")
+
+    # ── Request telemetry rates (required for real hardware) ─
+    tel = drone.telemetry
+    try:
+        await tel.set_rate_position(TELEM_RATE_HZ)
+        await tel.set_rate_battery(TELEM_RATE_HZ)
+        await tel.set_rate_attitude_euler(TELEM_RATE_HZ)
+        await tel.set_rate_velocity_ned(TELEM_RATE_HZ)
+        await tel.set_rate_gps_info(TELEM_RATE_HZ)
+        await tel.set_rate_home(1)
+        await tel.set_rate_in_air(1)
+        await tel.set_rate_landed_state(1)
+        print(f"[helios] ✓ Telemetry rates set to {TELEM_RATE_HZ} Hz")
+    except Exception as e:
+        print(f"[helios] ⚠ Could not set telemetry rates: {e}")
+        print("[helios]   (this is fine for SITL, but real hardware may not stream data)")
+
+    await asyncio.sleep(2)  # give autopilot time to start streaming
+    print("[helios] ✓ Streaming telemetry")
 
     # ── Telemetry coroutines ─────────────────────────────────
     async def _stream_position():

@@ -81,10 +81,12 @@ def main():
             if "battery" in data:
                 b = data["battery"]
                 remaining_percent = b["remaining_percent"]
-                if remaining_percent > 1:  # Check if already in percentage format
+                if remaining_percent is None:
+                    pct = "—"
+                elif remaining_percent > 1:  # already in percentage format
                     pct = f"{remaining_percent:.1f}%"
                 else:
-                    pct = f"{remaining_percent * 100:.1f}%" if remaining_percent is not None else "—"
+                    pct = f"{remaining_percent * 100:.1f}%"
                 volts = f"{b['voltage_v']}V" if b["voltage_v"] is not None else "—"
                 parts.append(f"  BAT  {pct}  {volts}")
 
